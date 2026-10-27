@@ -16,6 +16,7 @@ import {
   Clock,
   Layers,
   Copy,
+  Check,
   AlertTriangle,
   LineChart,
 } from 'lucide-react';
@@ -26,6 +27,7 @@ export const ActiveView: React.FC = () => {
 
   const [activeSessions, setActiveSessions] = useState<PppActive[]>([]);
   const [loading, setLoading] = useState(true);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Detail / Realtime Monitor modal
   const [selectedDetailSession, setSelectedDetailSession] = useState<PppActive | null>(null);
@@ -93,6 +95,16 @@ export const ActiveView: React.FC = () => {
     }
   };
 
+  const handleCopy = (text: string, key: string, label: string) => {
+    if (!text || text === '—') return;
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    info('Tersalin', `${label} '${text}' disalin ke clipboard.`);
+    setTimeout(() => {
+      setCopiedKey((prev) => (prev === key ? null : prev));
+    }, 1500);
+  };
+
   const columns = useMemo<ColumnDef<PppActive>[]>(() => {
     const cols: ColumnDef<PppActive>[] = [
       {
@@ -123,10 +135,27 @@ export const ActiveView: React.FC = () => {
         header: 'Username (PPPoE)',
         cell: ({ row }) => {
           const s = row.original;
+          const isCopied = copiedKey === `user-${s.name}`;
           return (
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <div className="flex items-center gap-1.5 group/user">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
               <span className="font-semibold text-slate-900 dark:text-white font-mono">{s.name}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopy(s.name, `user-${s.name}`, 'Username');
+                }}
+                className={`p-1 rounded-md transition-all ${
+                  isCopied
+                    ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60'
+                    : 'text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800'
+                }`}
+                title={isCopied ? 'Username Tersalin!' : 'Salin Username'}
+                aria-label={`Salin Username ${s.name}`}
+              >
+                {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
             </div>
           );
         },
@@ -135,11 +164,37 @@ export const ActiveView: React.FC = () => {
         accessorKey: 'address',
         header: 'IP Address',
         sortingFn: ipAddressComparator,
-        cell: ({ getValue }) => (
-          <span className="font-mono font-semibold text-slate-700 dark:text-zinc-300">
-            {String(getValue() || '—')}
-          </span>
-        ),
+        cell: ({ row, getValue }) => {
+          const ip = String(getValue() || '');
+          const s = row.original;
+          const isCopied = copiedKey === `ip-${s.name}-${ip}`;
+          if (!ip || ip === '—') {
+            return <span className="font-mono text-slate-400 dark:text-zinc-500">—</span>;
+          }
+          return (
+            <div className="flex items-center gap-1.5 group/ip">
+              <span className="font-mono font-semibold text-slate-700 dark:text-zinc-300">
+                {ip}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopy(ip, `ip-${s.name}-${ip}`, 'IP Address');
+                }}
+                className={`p-1 rounded-md transition-all ${
+                  isCopied
+                    ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60'
+                    : 'text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800'
+                }`}
+                title={isCopied ? 'IP Tersalin!' : 'Salin IP Address'}
+                aria-label={`Salin IP Address ${ip}`}
+              >
+                {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          );
+        },
       },
       {
         accessorKey: 'callerId',
@@ -235,7 +290,7 @@ export const ActiveView: React.FC = () => {
     });
 
     return cols;
-  }, [isMultiRouter]);
+  }, [isMultiRouter, copiedKey]);
 
   const getContextMenuItems = (s: PppActive) => [
     {
@@ -253,16 +308,14 @@ export const ActiveView: React.FC = () => {
       label: 'Salin IP Address',
       icon: <Copy className="w-3.5 h-3.5" />,
       action: () => {
-        navigator.clipboard.writeText(s.address || '');
-        info('Tersalin', `IP '${s.address}' disalin.`);
+        handleCopy(s.address || '', `ip-${s.name}-${s.address}`, 'IP Address');
       },
     },
     {
       label: 'Salin Username',
       icon: <Copy className="w-3.5 h-3.5" />,
       action: () => {
-        navigator.clipboard.writeText(s.name);
-        info('Tersalin', `Username '${s.name}' disalin.`);
+        handleCopy(s.name, `user-${s.name}`, 'Username');
       },
     },
   ];
