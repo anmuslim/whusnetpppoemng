@@ -12,6 +12,7 @@ import {
   VisibilityState,
   ColumnOrderState,
   RowSelectionState,
+  FilterFn,
 } from '@tanstack/react-table';
 import {
   ArrowUpDown,
@@ -35,6 +36,54 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuItem } from './ContextMenu.tsx';
+import { useRouterContext } from '../../context/RouterContext.tsx';
+
+// Custom comprehensive global filter that searches across ALL fields in the row data object
+// (name, IP, profile, service, comment, routerName, notes, status, booleans, nested properties, etc.)
+// regardless of column visibility or pagination, and ensures multi-word search terms match.
+export const comprehensiveGlobalFilterFn: FilterFn<any> = (row, _columnId, filterValue) => {
+  if (!filterValue || !String(filterValue).trim()) return true;
+  const terms = String(filterValue).trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+
+  const searchValues: string[] = [];
+
+  const extract = (val: any, depth = 0) => {
+    if (depth > 4 || val === null || val === undefined) return;
+    if (typeof val === 'string' || typeof val === 'number') {
+      searchValues.push(String(val).toLowerCase());
+    } else if (typeof val === 'boolean') {
+      searchValues.push(val ? 'true disabled nonaktif isolir off ya' : 'false aktif active enabled online hidup normal tidak');
+    } else if (Array.isArray(val)) {
+      for (const item of val) extract(item, depth + 1);
+    } else if (typeof val === 'object') {
+      for (const k of Object.keys(val)) {
+        extract(val[k], depth + 1);
+      }
+    }
+  };
+
+  // 1. Search all raw object properties from data
+  extract(row.original);
+
+  // 2. Also search all formatted/computed cell values from columns
+  try {
+    const cells = row.getAllCells ? row.getAllCells() : [];
+    for (const cell of cells) {
+      try {
+        const v = cell.getValue();
+        if (v !== null && v !== undefined && typeof v !== 'object') {
+          searchValues.push(String(v).toLowerCase());
+        }
+      } catch {}
+    }
+  } catch {}
+
+  const fullText = searchValues.join(' ');
+
+  // Every word typed must match somewhere in the row's data
+  return terms.every((term) => fullText.includes(term));
+};
 
 // Comparator for IP addresses (e.g. 10.10.0.2 vs 10.10.0.10)
 export function ipAddressComparator(rowA: any, rowB: any, columnId: string) {
@@ -255,6 +304,12 @@ export function DataTable<TData extends object>({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Safe RouterContext access if within RouterProvider
+  let routerCtx: any = null;
+  try {
+    routerCtx = useRouterContext();
+  } catch {}
+
   const table = useReactTable({
     data,
     columns,
@@ -268,6 +323,7 @@ export function DataTable<TData extends object>({
     },
     enableRowSelection: true,
     getRowId,
+    globalFilterFn: comprehensiveGlobalFilterFn,
     onSortingChange: setSorting,
     onGlobalFilterChange: setDebouncedGlobalFilter,
     onColumnFiltersChange: setColumnFilters,
@@ -285,6 +341,12 @@ export function DataTable<TData extends object>({
       },
     },
   });
+
+  // CRITICAL: Reset pagination to page 1 whenever search query or column filters change
+  // This guarantees search results from the entire dataset are immediately visible!
+  useEffect(() => {
+    table.setPageIndex(0);
+  }, [debouncedGlobalFilter, columnFilters]);
 
   // Keep page size synced
   useEffect(() => {
@@ -376,17 +438,34 @@ export function DataTable<TData extends object>({
             <input
               type="text"
               value={globalFilter}
-              onChange={(e) => setGlobalFilter(e.target.value)}
+              onChange={(e) => {
+                setGlobalFilter(e.target.value);
+                table.setPageIndex(0);
+              }}
               placeholder={searchPlaceholder}
-              className="w-full pl-9 pr-8 py-1.5 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-500 focus:outline-hidden focus:ring-1 focus:ring-sky-500 transition-colors"
+              className="w-full pl-9 pr-18 py-1.5 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-lg text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-500 focus:outline-hidden focus:ring-1 focus:ring-sky-500 transition-colors"
             />
             {globalFilter && (
-              <button
-                onClick={() => setGlobalFilter('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                <span
+                  className="text-[10px] font-mono px-1.5 py-0.2 rounded-xs bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-semibold"
+                  title="Jumlah data yang cocok dari keseluruhan data"
+                >
+                  {filteredCount}/{totalCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGlobalFilter('');
+                    setDebouncedGlobalFilter('');
+                    table.setPageIndex(0);
+                  }}
+                  className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200"
+                  title="Bersihkan pencarian"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             )}
           </div>
 
@@ -481,14 +560,47 @@ export function DataTable<TData extends object>({
         {topToolbarActions && <div className="flex items-center gap-2">{topToolbarActions}</div>}
       </div>
 
+      {/* Scope banner if currently restricted to a single router */}
+      {routerCtx && !routerCtx.isMultiRouter && routerCtx.routers.length > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-sky-50/70 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-900/60 text-xs">
+          <div className="flex items-center gap-2 text-slate-700 dark:text-zinc-300">
+            <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+            <span>
+              Pencarian saat ini difokuskan pada router <strong>{routerCtx.selectedRouter?.name || routerCtx.selectedRouterId}</strong> ({totalCount} item).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              routerCtx.setSelectedRouterId('all');
+              table.setPageIndex(0);
+            }}
+            className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
+          >
+            <span>Cari di Seluruh Router ({routerCtx.routers.length} router terdaftar) &rarr;</span>
+          </button>
+        </div>
+      )}
+
       {/* Active Filter Chips */}
       {(columnFilters.length > 0 || debouncedGlobalFilter) && (
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
           <span className="text-slate-400 dark:text-zinc-500 font-medium">Filter Aktif:</span>
           {debouncedGlobalFilter && (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 text-xs">
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 text-xs font-medium">
               <span>Cari: "{debouncedGlobalFilter}"</span>
-              <button onClick={() => setGlobalFilter('')} className="hover:text-sky-900">
+              <span className="text-[10px] bg-sky-200/60 dark:bg-sky-900/60 px-1 rounded-sm text-sky-800 dark:text-sky-200 font-semibold font-mono">
+                {filteredCount} dari {totalCount} cocok
+              </span>
+              <button
+                onClick={() => {
+                  setGlobalFilter('');
+                  setDebouncedGlobalFilter('');
+                  table.setPageIndex(0);
+                }}
+                className="hover:text-sky-900 dark:hover:text-white"
+                title="Hapus filter pencarian"
+              >
                 <X className="w-3 h-3" />
               </button>
             </span>
@@ -510,7 +622,9 @@ export function DataTable<TData extends object>({
           <button
             onClick={() => {
               setGlobalFilter('');
+              setDebouncedGlobalFilter('');
               setColumnFilters([]);
+              table.setPageIndex(0);
             }}
             className="text-xs text-sky-600 dark:text-sky-400 hover:underline font-medium ml-1"
           >
@@ -630,7 +744,47 @@ export function DataTable<TData extends object>({
               {table.getRowModel().rows.length === 0 ? (
                 <tr>
                   <td colSpan={columns.length} className="py-12 text-center text-slate-500 dark:text-zinc-400 font-sans">
-                    {emptyMessage}
+                    {debouncedGlobalFilter ? (
+                      <div className="flex flex-col items-center justify-center gap-2 max-w-md mx-auto px-4">
+                        <Search className="w-8 h-8 text-slate-300 dark:text-zinc-600 mb-1" />
+                        <p className="font-semibold text-slate-800 dark:text-zinc-200 text-sm">
+                          Tidak ada data yang cocok dengan "{debouncedGlobalFilter}"
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-zinc-400 leading-relaxed">
+                          Pencarian telah memeriksa seluruh {totalCount} data (mencakup semua halaman, kolom terlihat, kolom tersembunyi, IP, komentar, profile, dan router).
+                          {routerCtx && !routerCtx.isMultiRouter && (
+                            <span> Saat ini dibatasi pada router <strong>{routerCtx.selectedRouter?.name || routerCtx.selectedRouterId}</strong>.</span>
+                          )}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGlobalFilter('');
+                              setDebouncedGlobalFilter('');
+                              table.setPageIndex(0);
+                            }}
+                            className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-lg transition-colors"
+                          >
+                            Reset Pencarian ({totalCount} total data)
+                          </button>
+                          {routerCtx && !routerCtx.isMultiRouter && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                routerCtx.setSelectedRouterId('all');
+                                table.setPageIndex(0);
+                              }}
+                              className="px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-lg shadow-2xs transition-colors"
+                            >
+                              Cari di Semua Router ({routerCtx.routers.length})
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      emptyMessage
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -676,6 +830,11 @@ export function DataTable<TData extends object>({
             <span className="font-medium text-slate-700 dark:text-zinc-300">
               <strong className="text-slate-900 dark:text-white">{filteredCount}</strong> dari{' '}
               <strong className="text-slate-900 dark:text-white">{totalCount}</strong> item
+              {debouncedGlobalFilter && (
+                <span className="text-sky-600 dark:text-sky-400 ml-1 font-semibold">
+                  (terfilter dari seluruh data)
+                </span>
+              )}
               {selectedCount > 0 && (
                 <span className="text-sky-600 dark:text-sky-400 ml-1">
                   (<strong>{selectedCount}</strong> terpilih)
