@@ -1,0 +1,6 @@
+{
+  "name": "PPPoE Manager",
+  "description": "Aplikasi manajemen PPPoE multi-router MikroTik terpusat dengan antarmuka modern ala Winbox.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

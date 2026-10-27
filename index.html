@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="id" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PPPoE Manager - Manajemen MikroTik Multi-Router</title>
+    <meta name="description" content="Aplikasi manajemen PPPoE multi-router MikroTik terpusat dengan antarmuka modern ala Winbox." />
+    <meta property="og:title" content="PPPoE Manager - Manajemen MikroTik Multi-Router" />
+    <meta property="og:description" content="Aplikasi manajemen PPPoE multi-router MikroTik terpusat dengan antarmuka modern ala Winbox." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('pppoe_theme') || 'dark';
+          if (t === 'dark') {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch(e) {}
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
