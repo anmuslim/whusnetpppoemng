@@ -29,6 +29,61 @@ router.get('/:name/history', (req, res: Response) => {
   res.json({ success: true, data: history });
 });
 
+// GET realtime session traffic
+router.get('/:name/traffic', async (req, res: Response) => {
+  const routerId = (req.params as any).routerId;
+  const sessionName = req.params.name;
+  const explicitRouter = req.query.routerId as string;
+
+  try {
+    let targetDriver: any = null;
+
+    if (explicitRouter && explicitRouter !== 'all') {
+      const targets = await routerManager.getTargetDrivers(explicitRouter).catch(() => []);
+      if (targets.length > 0) targetDriver = targets[0].driver;
+    } else if (routerId && routerId !== 'all') {
+      const targets = await routerManager.getTargetDrivers(routerId).catch(() => []);
+      if (targets.length > 0) targetDriver = targets[0].driver;
+    }
+
+    // 1. If targetDriver was identified, check if it has this active session
+    if (targetDriver) {
+      try {
+        const traffic = await targetDriver.getSessionTraffic(sessionName);
+        if (traffic && traffic.connected) {
+          return res.json({ success: true, data: traffic });
+        }
+      } catch {
+        // Fall back to scanning all routers
+      }
+    }
+
+    // 2. Scan all routers to find which router currently has this active session
+    const all = await routerManager.getTargetDrivers('all').catch(() => []);
+    for (const t of all) {
+      try {
+        const traffic = await t.driver.getSessionTraffic(sessionName);
+        if (traffic && traffic.connected) {
+          return res.json({ success: true, data: traffic });
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    // 3. Fallback driver result if still not found
+    const fallbackDriver = targetDriver || (all.length > 0 ? all[0].driver : null);
+    if (!fallbackDriver) {
+      return res.status(404).json({ success: false, error: 'Router tidak ditemukan' });
+    }
+
+    const traffic = await fallbackDriver.getSessionTraffic(sessionName);
+    res.json({ success: true, data: traffic });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Gagal mengambil trafik sesi' });
+  }
+});
+
 // DELETE disconnect active session
 router.delete('/:name', async (req: AuthenticatedRequest, res: Response) => {
   const routerId = (req.params as any).routerId;

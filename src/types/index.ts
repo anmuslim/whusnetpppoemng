@@ -44,12 +44,31 @@ export interface PppActive {
   address?: string;
   uptime?: string;
   encoding?: string;
-  rxRate?: string;
-  txRate?: string;
+  rxRate?: string;       // Client Upload (Router Rx) formatted string (e.g. "1.2 Mbps")
+  txRate?: string;       // Client Download (Router Tx) formatted string (e.g. "9.8 Mbps")
+  rxBps?: number;        // Client Upload in raw bits per second
+  txBps?: number;        // Client Download in raw bits per second
+  downloadRate?: string; // Formatted client download rate
+  uploadRate?: string;   // Formatted client upload rate
+  interfaceName?: string;
   routerId?: string;
   routerName?: string;
   sessionTime?: number;
 }
+
+export interface SessionTrafficInfo {
+  name: string;
+  interfaceName?: string;
+  connected: boolean;
+  rxBps: number;       // Client Upload (bps)
+  txBps: number;       // Client Download (bps)
+  uploadRate: string;  // Formatted Upload
+  downloadRate: string;// Formatted Download
+  rxBytes?: number;    // Total uploaded bytes
+  txBytes?: number;    // Total downloaded bytes
+  timestamp: number;
+}
+
 
 export interface PppProfile {
   name: string;

@@ -235,12 +235,12 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
               {stats?.totalTraffic ?? '0 Mbps'}
             </span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-zinc-400 font-mono">
-            <span className="flex items-center gap-1">
-              <ArrowDownLeft className="w-3 h-3 text-emerald-500" /> Rx: {stats?.totalTrafficRx || '0M'}
+          <div className="mt-2 flex items-center justify-between text-[10px] font-mono">
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold" title="Total Download pelanggan (MikroTik Tx)">
+              <ArrowDownLeft className="w-3 h-3" /> DL: {stats?.totalTrafficTx || '0 bps'}
             </span>
-            <span className="flex items-center gap-1">
-              <ArrowUpRight className="w-3 h-3 text-sky-500" /> Tx: {stats?.totalTrafficTx || '0M'}
+            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold" title="Total Upload pelanggan (MikroTik Rx)">
+              <ArrowUpRight className="w-3 h-3" /> UL: {stats?.totalTrafficRx || '0 bps'}
             </span>
           </div>
         </div>

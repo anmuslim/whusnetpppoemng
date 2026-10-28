@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PppActive, SessionHistoryItem } from '../../types/index.ts';
+import { PppActive, SessionHistoryItem, SessionTrafficInfo } from '../../types/index.ts';
 import { api } from '../../api/client.ts';
 import { Modal } from '../common/Modal.tsx';
 import {
@@ -7,16 +7,14 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Clock,
-  Radio,
   UserX,
   Copy,
   Check,
-  ShieldCheck,
-  Server,
   Network,
   History,
-  TrendingUp,
-  RefreshCw,
+  HardDriveDownload,
+  HardDriveUpload,
+  Radio,
 } from 'lucide-react';
 
 interface ActiveSessionDetailModalProps {
@@ -27,6 +25,36 @@ interface ActiveSessionDetailModalProps {
   routerId: string;
 }
 
+interface TrafficHistoryPoint {
+  time: string;
+  downloadMbps: number; // Client Download (Router Tx)
+  uploadMbps: number;   // Client Upload (Router Rx)
+}
+
+function bpsToMbps(bps: number): number {
+  return +(bps / 1_000_000).toFixed(2);
+}
+
+function parseRateStringToMbps(val?: string): number {
+  if (!val) return 0;
+  const num = parseFloat(val);
+  if (isNaN(num)) return 0;
+  const s = val.toLowerCase();
+  if (s.includes('gbps') || s.includes('g')) return +(num * 1000).toFixed(2);
+  if (s.includes('mbps') || s.includes('m')) return +num.toFixed(2);
+  if (s.includes('kbps') || s.includes('k')) return +(num / 1000).toFixed(3);
+  if (s.includes('bps')) return +(num / 1_000_000).toFixed(4);
+  return num;
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
 export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> = ({
   session,
   isOpen,
@@ -34,104 +62,157 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
   onKick,
   routerId,
 }) => {
-  const [trafficHistory, setTrafficHistory] = useState<Array<{ time: string; rx: number; tx: number }>>([]);
-  const [currentRx, setCurrentRx] = useState<number>(0);
-  const [currentTx, setCurrentTx] = useState<number>(0);
-  const [peakRx, setPeakRx] = useState<number>(0);
-  const [peakTx, setPeakTx] = useState<number>(0);
+  const [trafficHistory, setTrafficHistory] = useState<TrafficHistoryPoint[]>([]);
+  const [currentDownMbps, setCurrentDownMbps] = useState<number>(0);
+  const [currentUpMbps, setCurrentUpMbps] = useState<number>(0);
+  const [peakDownMbps, setPeakDownMbps] = useState<number>(0);
+  const [peakUpMbps, setPeakUpMbps] = useState<number>(0);
+  const [formattedDown, setFormattedDown] = useState<string>('0 bps');
+  const [formattedUp, setFormattedUp] = useState<string>('0 bps');
+  const [totalRxBytes, setTotalRxBytes] = useState<number | undefined>(undefined);
+  const [totalTxBytes, setTotalTxBytes] = useState<number | undefined>(undefined);
+  const [isConnected, setIsConnected] = useState<boolean>(true);
+  const [interfaceName, setInterfaceName] = useState<string>('');
 
   const [connectionHistory, setConnectionHistory] = useState<SessionHistoryItem[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  // Parse initial rates when session opens
+  const isMountedRef = useRef(true);
+  const consecutiveDisconnectRef = useRef(0);
+
+  // Initialize and reset when modal opens or session changes
   useEffect(() => {
+    isMountedRef.current = true;
+    consecutiveDisconnectRef.current = 0;
+
     if (!session || !isOpen) {
       setTrafficHistory([]);
       return;
     }
 
-    const parseRateToMbps = (val?: string): number => {
-      if (!val) return 0;
-      const num = parseFloat(val);
-      if (isNaN(num)) return 0;
-      const lower = val.toLowerCase();
-      if (lower.includes('gbps') || lower.includes('g')) return +(num * 1000).toFixed(1);
-      if (lower.includes('kbps') || lower.includes('k')) return +(num / 1000).toFixed(2);
-      if (lower.includes('bps')) return +(num / 1000000).toFixed(3);
-      return num;
-    };
+    // In MikroTik: Tx is Download to client, Rx is Upload from client
+    const initDown = typeof session.txBps === 'number' && session.txBps > 0
+      ? bpsToMbps(session.txBps)
+      : parseRateStringToMbps(session.downloadRate || session.txRate) || 8.5;
 
-    const initRx = parseRateToMbps(session.rxRate) || 1.2;
-    const initTx = parseRateToMbps(session.txRate) || 4.5;
-    setCurrentRx(initRx);
-    setCurrentTx(initTx);
-    setPeakRx(initRx);
-    setPeakTx(initTx);
+    const initUp = typeof session.rxBps === 'number' && session.rxBps > 0
+      ? bpsToMbps(session.rxBps)
+      : parseRateStringToMbps(session.uploadRate || session.rxRate) || 2.5;
 
-    // Seed 15 initial history ticks so chart renders nicely immediately
-    const seeded = [];
+    setCurrentDownMbps(initDown);
+    setCurrentUpMbps(initUp);
+    setPeakDownMbps(initDown);
+    setPeakUpMbps(initUp);
+    setFormattedDown(session.downloadRate || session.txRate || `${initDown} Mbps`);
+    setFormattedUp(session.uploadRate || session.rxRate || `${initUp} Mbps`);
+    setIsConnected(true);
+    setInterfaceName(session.interfaceName || `<pppoe-${session.name}>`);
+
+    // Seed initial 10-point rolling history curve so SVG graph renders immediately upon opening
+    const initialPoints: TrafficHistoryPoint[] = [];
     const now = Date.now();
-    for (let i = 14; i >= 0; i--) {
-      const rxVal = Math.max(0.5, +(initRx + (Math.random() * 4 - 2)).toFixed(1));
-      const txVal = Math.max(1.0, +(initTx + (Math.random() * 8 - 4)).toFixed(1));
-      seeded.push({
-        time: new Date(now - i * 2000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        rx: rxVal,
-        tx: txVal,
+    for (let i = 9; i >= 0; i--) {
+      const t = new Date(now - i * 1500).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const jitterDown = initDown > 0 ? +(Math.sin(i * 1.3) * (initDown * 0.08)).toFixed(2) : 0;
+      const jitterUp = initUp > 0 ? +(Math.cos(i * 1.5) * (initUp * 0.08)).toFixed(2) : 0;
+      initialPoints.push({
+        time: t,
+        downloadMbps: Math.max(0.1, +(initDown + jitterDown).toFixed(2)),
+        uploadMbps: Math.max(0.1, +(initUp + jitterUp).toFixed(2)),
       });
     }
-    setTrafficHistory(seeded);
+    setTrafficHistory(initialPoints);
 
-    // Fetch connect/disconnect event history
     fetchHistory();
-  }, [session, isOpen]);
+    fetchTraffic();
 
-  // Realtime traffic polling & simulation updater
-  useEffect(() => {
-    if (!session || !isOpen) return;
-
+    // Poll live traffic from backend every 1.5 seconds
     const interval = setInterval(() => {
-      // Simulate real traffic fluctuation around user's rate
-      const varianceRx = (Math.random() * 5 - 2.2);
-      const varianceTx = (Math.random() * 10 - 4.5);
-      const newRx = Math.max(0.2, +(currentRx + varianceRx).toFixed(1));
-      const newTx = Math.max(0.8, +(currentTx + varianceTx).toFixed(1));
+      if (isMountedRef.current && isOpen && session) {
+        fetchTraffic();
+      }
+    }, 1500);
 
-      setCurrentRx(newRx);
-      setCurrentTx(newTx);
-      setPeakRx((prev) => Math.max(prev, newRx));
-      setPeakTx((prev) => Math.max(prev, newTx));
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(interval);
+    };
+  }, [session?.name, session?.routerId, isOpen]);
 
-      setTrafficHistory((prev) => {
-        const next = [
-          ...prev,
-          {
-            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            rx: newRx,
-            tx: newTx,
-          },
-        ];
-        return next.slice(-24); // Keep last 24 ticks (~48 seconds)
-      });
-    }, 2000);
+  const fetchTraffic = async () => {
+    if (!session) return;
+    try {
+      const targetRouter = session.routerId || routerId || 'all';
+      const res = await api.active.getTraffic(targetRouter, session.name, session.routerId);
+      if (res.success && res.data && isMountedRef.current) {
+        const info = res.data;
 
-    return () => clearInterval(interval);
-  }, [session, isOpen, currentRx, currentTx]);
+        if (info.connected) {
+          consecutiveDisconnectRef.current = 0;
+          setIsConnected(true);
+        } else {
+          consecutiveDisconnectRef.current += 1;
+          // Only mark disconnected if 3 consecutive polls fail (grace period for network/query delay)
+          if (consecutiveDisconnectRef.current >= 3) {
+            setIsConnected(false);
+          }
+        }
+
+        if (info.interfaceName) setInterfaceName(info.interfaceName);
+        if (info.rxBytes !== undefined) setTotalRxBytes(info.rxBytes);
+        if (info.txBytes !== undefined) setTotalTxBytes(info.txBytes);
+
+        // In MikroTik: Tx = Client Download, Rx = Client Upload
+        const downMbps = bpsToMbps(info.txBps);
+        const upMbps = bpsToMbps(info.rxBps);
+
+        // If connected or within disconnect grace period, update or preserve live rates
+        if (info.connected || consecutiveDisconnectRef.current < 3) {
+          if (downMbps > 0 || !session.downloadRate) {
+            setCurrentDownMbps(downMbps);
+            setFormattedDown(info.downloadRate || `${downMbps} Mbps`);
+          }
+          if (upMbps > 0 || !session.uploadRate) {
+            setCurrentUpMbps(upMbps);
+            setFormattedUp(info.uploadRate || `${upMbps} Mbps`);
+          }
+
+          setPeakDownMbps((prev) => Math.max(prev, downMbps));
+          setPeakUpMbps((prev) => Math.max(prev, upMbps));
+
+          const timeStr = new Date(info.timestamp || Date.now()).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          });
+
+          setTrafficHistory((prev) => {
+            const next = [...prev, { time: timeStr, downloadMbps: downMbps, uploadMbps: upMbps }];
+            return next.slice(-25); // Keep last 25 readings (~37s)
+          });
+        } else {
+          // Confirmed disconnected after 3 failed polls
+          setCurrentDownMbps(0);
+          setCurrentUpMbps(0);
+          setFormattedDown('0 bps');
+          setFormattedUp('0 bps');
+        }
+      }
+    } catch {
+      // Keep previous state if temporary network error
+    }
+  };
 
   const fetchHistory = async () => {
     if (!session) return;
     try {
-      setHistoryLoading(true);
-      const targetRouter = session.routerId || routerId;
+      const targetRouter = session.routerId || routerId || 'all';
       const res = await api.active.getHistory(targetRouter, session.name);
-      if (res.success && Array.isArray(res.data)) {
+      if (res.success && Array.isArray(res.data) && isMountedRef.current) {
         setConnectionHistory(res.data);
       }
     } catch {
       // Fallback
-    } finally {
-      setHistoryLoading(false);
     }
   };
 
@@ -143,33 +224,38 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
 
   if (!session) return null;
 
-  // SVG Chart Dimensions
+  // SVG Chart Dimensions & Dynamic Scaling
   const chartHeight = 90;
   const chartWidth = 440;
-  const maxRate = Math.max(25, peakTx * 1.25);
+  const maxRecorded = Math.max(0.5, peakDownMbps, peakUpMbps, currentDownMbps, currentUpMbps);
+  const maxScale = Math.max(5, Math.ceil(maxRecorded * 1.25));
 
-  const pointsRx = trafficHistory
-    .map((d, idx) => {
-      const x = (idx / (Math.max(1, trafficHistory.length - 1))) * chartWidth;
-      const y = chartHeight - (d.rx / maxRate) * chartHeight;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
+  const pointsDown = trafficHistory.length > 0
+    ? trafficHistory
+        .map((d, idx) => {
+          const x = (idx / Math.max(1, trafficHistory.length - 1)) * chartWidth;
+          const y = chartHeight - (d.downloadMbps / maxScale) * (chartHeight - 8) - 4;
+          return `${x.toFixed(1)},${Math.max(2, Math.min(chartHeight - 2, y)).toFixed(1)}`;
+        })
+        .join(' ')
+    : '';
 
-  const pointsTx = trafficHistory
-    .map((d, idx) => {
-      const x = (idx / (Math.max(1, trafficHistory.length - 1))) * chartWidth;
-      const y = chartHeight - (d.tx / maxRate) * chartHeight;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
+  const pointsUp = trafficHistory.length > 0
+    ? trafficHistory
+        .map((d, idx) => {
+          const x = (idx / Math.max(1, trafficHistory.length - 1)) * chartWidth;
+          const y = chartHeight - (d.uploadMbps / maxScale) * (chartHeight - 8) - 4;
+          return `${x.toFixed(1)},${Math.max(2, Math.min(chartHeight - 2, y)).toFixed(1)}`;
+        })
+        .join(' ')
+    : '';
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title={`Live Monitor Sesi: ${session.name}`}
-      subtitle={`Router: ${session.routerName || 'MikroTik'} • IP: ${session.address || '—'}`}
+      subtitle={`Router: ${session.routerName || 'MikroTik'} • Interface: ${interfaceName || 'pppoe-in'}`}
       maxWidth="2xl"
     >
       <div className="space-y-4 text-xs">
@@ -179,88 +265,123 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                {isConnected ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                  </>
+                ) : (
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500" />
+                )}
               </span>
               <span className="font-semibold text-slate-100 font-mono text-sm">{session.name}</span>
-              <span className="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full font-bold">
-                ONLINE
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                  isConnected
+                    ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                    : 'bg-rose-950 text-rose-400 border-rose-800'
+                }`}
+              >
+                {isConnected ? 'ONLINE' : 'TERPUTUS'}
               </span>
             </div>
 
             <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
               <span className="flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5 text-slate-400" />
-                <span>Uptime: <strong className="text-white">{session.uptime || '—'}</strong></span>
+                <span>
+                  Uptime: <strong className="text-white">{session.uptime || '—'}</strong>
+                </span>
               </span>
             </div>
           </div>
 
-          {/* Current Rate Gauges */}
+          {/* Current Rate Gauges: Tx (Download) & Rx (Upload) */}
           <div className="grid grid-cols-2 gap-4 my-3">
+            {/* Client Download (Router Tx) */}
             <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
               <div className="flex items-center justify-between text-slate-400 mb-1">
                 <span className="flex items-center gap-1 font-semibold text-emerald-400">
                   <ArrowDownLeft className="w-4 h-4" />
-                  <span>Download (Rx)</span>
+                  <span>Download (Tx Rate)</span>
                 </span>
-                <span className="text-[10px]">Puncak: {peakRx.toFixed(1)} Mbps</span>
+                <span className="text-[10px] text-slate-400">
+                  Puncak: {peakDownMbps.toFixed(1)} Mbps
+                </span>
               </div>
               <div className="flex items-baseline gap-1.5 font-mono">
                 <span className="text-2xl font-black text-emerald-400 tabular-nums">
-                  {currentRx.toFixed(1)}
+                  {formattedDown}
                 </span>
-                <span className="text-xs text-slate-400 font-bold">Mbps</span>
               </div>
-              {/* Progress bar */}
+              {/* Progress bar relative to max scale */}
               <div className="w-full bg-slate-700 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-emerald-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, (currentRx / maxRate) * 100)}%` }}
+                  style={{ width: `${Math.min(100, Math.max(3, (currentDownMbps / maxScale) * 100))}%` }}
                 />
               </div>
+              {totalTxBytes !== undefined && (
+                <div className="mt-1.5 text-[10px] text-slate-400 flex items-center justify-between font-mono">
+                  <span className="flex items-center gap-1">
+                    <HardDriveDownload className="w-3 h-3 text-emerald-500" /> Total Kuota Tx:
+                  </span>
+                  <span className="text-slate-200 font-semibold">{formatBytes(totalTxBytes)}</span>
+                </div>
+              )}
             </div>
 
+            {/* Client Upload (Router Rx) */}
             <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
               <div className="flex items-center justify-between text-slate-400 mb-1">
                 <span className="flex items-center gap-1 font-semibold text-sky-400">
                   <ArrowUpRight className="w-4 h-4" />
-                  <span>Upload (Tx)</span>
+                  <span>Upload (Rx Rate)</span>
                 </span>
-                <span className="text-[10px]">Puncak: {peakTx.toFixed(1)} Mbps</span>
+                <span className="text-[10px] text-slate-400">
+                  Puncak: {peakUpMbps.toFixed(1)} Mbps
+                </span>
               </div>
               <div className="flex items-baseline gap-1.5 font-mono">
                 <span className="text-2xl font-black text-sky-400 tabular-nums">
-                  {currentTx.toFixed(1)}
+                  {formattedUp}
                 </span>
-                <span className="text-xs text-slate-400 font-bold">Mbps</span>
               </div>
-              {/* Progress bar */}
+              {/* Progress bar relative to max scale */}
               <div className="w-full bg-slate-700 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-sky-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, (currentTx / maxRate) * 100)}%` }}
+                  style={{ width: `${Math.min(100, Math.max(3, (currentUpMbps / maxScale) * 100))}%` }}
                 />
               </div>
+              {totalRxBytes !== undefined && (
+                <div className="mt-1.5 text-[10px] text-slate-400 flex items-center justify-between font-mono">
+                  <span className="flex items-center gap-1">
+                    <HardDriveUpload className="w-3 h-3 text-sky-500" /> Total Kuota Rx:
+                  </span>
+                  <span className="text-slate-200 font-semibold">{formatBytes(totalRxBytes)}</span>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* SVG Traffic Waveform */}
+          {/* SVG Realtime Waveform Chart */}
           <div className="bg-slate-950/90 rounded-lg p-2.5 border border-slate-800">
             <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mb-1.5">
               <span className="flex items-center gap-1">
                 <Activity className="w-3 h-3 text-sky-400 animate-pulse" />
-                <span>Grafik Trafik Realtime (30 detik terakhir)</span>
+                <span>Grafik Trafik Realtime (Telemetri MikroTik)</span>
               </span>
               <div className="flex items-center gap-3">
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  <span>Rx</span>
+                  <span>Download (Tx)</span>
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-sky-500" />
-                  <span>Tx</span>
+                  <span>Upload (Rx)</span>
                 </span>
+                <span className="text-slate-500">Skala: {maxScale} Mbps</span>
               </div>
             </div>
 
@@ -275,25 +396,25 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
                 <line x1="0" y1={chartHeight * 0.5} x2={chartWidth} y2={chartHeight * 0.5} stroke="#334155" strokeDasharray="3,3" strokeWidth="0.5" />
                 <line x1="0" y1={chartHeight * 0.75} x2={chartWidth} y2={chartHeight * 0.75} stroke="#334155" strokeDasharray="3,3" strokeWidth="0.5" />
 
-                {/* Polylines */}
-                {pointsRx && (
+                {/* Polylines: Tx (Download) in emerald, Rx (Upload) in sky */}
+                {pointsDown && (
                   <polyline
                     fill="none"
                     stroke="#10b981"
-                    strokeWidth="2"
+                    strokeWidth="2.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    points={pointsRx}
+                    points={pointsDown}
                   />
                 )}
-                {pointsTx && (
+                {pointsUp && (
                   <polyline
                     fill="none"
-                    stroke="#0284c7"
+                    stroke="#38bdf8"
                     strokeWidth="2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    points={pointsTx}
+                    points={pointsUp}
                   />
                 )}
               </svg>
@@ -317,9 +438,11 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
                 </span>
               </div>
               <button
+                type="button"
                 onClick={() => copyToClipboard(session.address || '', 'ip')}
-                className="p-1 text-slate-400 hover:text-sky-600 rounded"
+                className="p-1 text-slate-400 hover:text-sky-600 rounded transition-colors"
                 title="Salin IP"
+                aria-label="Salin IP Address"
               >
                 {copiedField === 'ip' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
@@ -333,18 +456,20 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
                 </span>
               </div>
               <button
+                type="button"
                 onClick={() => copyToClipboard(session.callerId || '', 'mac')}
-                className="p-1 text-slate-400 hover:text-sky-600 rounded"
+                className="p-1 text-slate-400 hover:text-sky-600 rounded transition-colors"
                 title="Salin MAC"
+                aria-label="Salin MAC Address"
               >
                 {copiedField === 'mac' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
             </div>
 
             <div className="p-2 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700/80">
-              <span className="text-[10px] text-slate-400 block">Enkripsi / Encoding</span>
+              <span className="text-[10px] text-slate-400 block">Interface Dynamically Bound</span>
               <span className="font-mono text-slate-800 dark:text-zinc-200 font-semibold">
-                {session.encoding || 'MPPE128 stateless'}
+                {interfaceName || `<pppoe-${session.name}>`}
               </span>
             </div>
 
@@ -428,7 +553,7 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
               onKick(session);
               onClose();
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 hover:bg-rose-100 rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2 font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer"
           >
             <UserX className="w-4 h-4" />
             <span>Putuskan Sesi (Kick)</span>
@@ -437,7 +562,7 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 font-semibold text-slate-700 dark:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+            className="px-4 py-2 font-semibold text-slate-700 dark:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
           >
             Tutup
           </button>

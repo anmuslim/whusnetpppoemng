@@ -66,11 +66,34 @@ export interface PppActive {
   address?: string;
   uptime?: string;
   encoding?: string;
-  rxRate?: string;
-  txRate?: string;
+  rxRate?: string;       // Router Rx = Client Upload (e.g. "2.4 Mbps")
+  txRate?: string;       // Router Tx = Client Download (e.g. "18.5 Mbps")
+  rxBps?: number;        // Client upload in bps
+  txBps?: number;        // Client download in bps
+  uploadRate?: string;   // User-friendly upload rate
+  downloadRate?: string; // User-friendly download rate
+  interfaceName?: string;// Dynamic interface name (e.g. <pppoe-user1>)
   routerId?: string;
   routerName?: string;
   sessionTime?: number;
+}
+
+export interface SessionTrafficInfo {
+  name: string;
+  interfaceName?: string;
+  connected: boolean;
+  rxBps: number;
+  txBps: number;
+  uploadBps?: number;
+  downloadBps?: number;
+  rxRate?: string;
+  txRate?: string;
+  uploadRate: string;
+  downloadRate: string;
+  rxBytes?: number;
+  txBytes?: number;
+  uptime?: string;
+  timestamp: number;
 }
 
 export interface PppProfile {
@@ -142,6 +165,7 @@ export interface IRouterDriver {
 
   getActive(): Promise<PppActive[]>;
   disconnectActive(name: string): Promise<boolean>;
+  getSessionTraffic(name: string): Promise<SessionTrafficInfo>;
 
   getProfiles(): Promise<PppProfile[]>;
   createProfile(profile: PppProfile): Promise<PppProfile>;

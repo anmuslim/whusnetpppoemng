@@ -12,8 +12,8 @@ router.get('/', async (_req, res: Response) => {
   let totalSecrets = 0;
   let totalActive = 0;
   let totalDisabled = 0;
-  let totalTrafficRxMbps = 0;
-  let totalTrafficTxMbps = 0;
+  let totalRxBps = 0; // Router Rx = Client Upload
+  let totalTxBps = 0; // Router Tx = Client Download
 
   const routerSummaries: Array<{
     id: string;
@@ -52,16 +52,35 @@ router.get('/', async (_req, res: Response) => {
 
       const disabled = secrets.filter((s) => s.disabled).length;
 
-      // Calculate traffic
+      // Calculate precise traffic in bps without string parsing distortion
       active.forEach((a) => {
-        if (a.rxRate) {
-          const rxNum = parseFloat(a.rxRate);
-          if (!isNaN(rxNum)) totalTrafficRxMbps += rxNum;
+        let rx = typeof a.rxBps === 'number' ? a.rxBps : 0;
+        let tx = typeof a.txBps === 'number' ? a.txBps : 0;
+
+        if (rx === 0 && a.rxRate) {
+          const s = String(a.rxRate).trim().toLowerCase();
+          const num = parseFloat(s);
+          if (!isNaN(num)) {
+            if (s.endsWith('gbps') || s.endsWith('g')) rx = num * 1_000_000_000;
+            else if (s.endsWith('mbps') || s.endsWith('m')) rx = num * 1_000_000;
+            else if (s.endsWith('kbps') || s.endsWith('k')) rx = num * 1_000;
+            else rx = num;
+          }
         }
-        if (a.txRate) {
-          const txNum = parseFloat(a.txRate);
-          if (!isNaN(txNum)) totalTrafficTxMbps += txNum;
+
+        if (tx === 0 && a.txRate) {
+          const s = String(a.txRate).trim().toLowerCase();
+          const num = parseFloat(s);
+          if (!isNaN(num)) {
+            if (s.endsWith('gbps') || s.endsWith('g')) tx = num * 1_000_000_000;
+            else if (s.endsWith('mbps') || s.endsWith('m')) tx = num * 1_000_000;
+            else if (s.endsWith('kbps') || s.endsWith('k')) tx = num * 1_000;
+            else tx = num;
+          }
         }
+
+        totalRxBps += rx;
+        totalTxBps += tx;
       });
 
       onlineRoutersCount++;
@@ -126,9 +145,13 @@ router.get('/', async (_req, res: Response) => {
         totalSecrets,
         totalActive,
         totalDisabled,
-        totalTrafficRx: `${totalTrafficRxMbps.toFixed(1)} Mbps`,
-        totalTrafficTx: `${totalTrafficTxMbps.toFixed(1)} Mbps`,
-        totalTraffic: `${(totalTrafficRxMbps + totalTrafficTxMbps).toFixed(1)} Mbps`,
+        totalTrafficRx: totalRxBps >= 1_000_000_000 ? `${(totalRxBps / 1_000_000_000).toFixed(2)} Gbps` : totalRxBps >= 1_000_000 ? `${(totalRxBps / 1_000_000).toFixed(1)} Mbps` : totalRxBps >= 1_000 ? `${(totalRxBps / 1_000).toFixed(1)} kbps` : `${Math.round(totalRxBps)} bps`,
+        totalTrafficTx: totalTxBps >= 1_000_000_000 ? `${(totalTxBps / 1_000_000_000).toFixed(2)} Gbps` : totalTxBps >= 1_000_000 ? `${(totalTxBps / 1_000_000).toFixed(1)} Mbps` : totalTxBps >= 1_000 ? `${(totalTxBps / 1_000).toFixed(1)} kbps` : `${Math.round(totalTxBps)} bps`,
+        totalTrafficDownload: totalTxBps >= 1_000_000_000 ? `${(totalTxBps / 1_000_000_000).toFixed(2)} Gbps` : totalTxBps >= 1_000_000 ? `${(totalTxBps / 1_000_000).toFixed(1)} Mbps` : totalTxBps >= 1_000 ? `${(totalTxBps / 1_000).toFixed(1)} kbps` : `${Math.round(totalTxBps)} bps`,
+        totalTrafficUpload: totalRxBps >= 1_000_000_000 ? `${(totalRxBps / 1_000_000_000).toFixed(2)} Gbps` : totalRxBps >= 1_000_000 ? `${(totalRxBps / 1_000_000).toFixed(1)} Mbps` : totalRxBps >= 1_000 ? `${(totalRxBps / 1_000).toFixed(1)} kbps` : `${Math.round(totalRxBps)} bps`,
+        totalTrafficRxMbps: +(totalRxBps / 1_000_000).toFixed(2),
+        totalTrafficTxMbps: +(totalTxBps / 1_000_000).toFixed(2),
+        totalTraffic: (totalRxBps + totalTxBps) >= 1_000_000_000 ? `${((totalRxBps + totalTxBps) / 1_000_000_000).toFixed(2)} Gbps` : (totalRxBps + totalTxBps) >= 1_000_000 ? `${((totalRxBps + totalTxBps) / 1_000_000).toFixed(1)} Mbps` : (totalRxBps + totalTxBps) >= 1_000 ? `${((totalRxBps + totalTxBps) / 1_000).toFixed(1)} kbps` : `${Math.round(totalRxBps + totalTxBps)} bps`,
       },
       routerSummaries,
       recentEvents: storage.getRecentEvents(),

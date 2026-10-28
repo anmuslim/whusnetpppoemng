@@ -9,6 +9,7 @@ import {
   OverviewData,
   AuditLogItem,
   User,
+  SessionTrafficInfo,
 } from '../types/index.ts';
 
 const TOKEN_KEY = 'pppoe_manager_jwt';
@@ -152,6 +153,12 @@ export const api = {
     getHistory: (routerId: string, name: string) =>
       request<{ success: boolean; data: Array<{ id: string; timestamp: string; type: 'connected' | 'disconnected'; username: string; routerName: string; ipAddress: string; details?: string }> }>(
         `/api/routers/${encodeURIComponent(routerId)}/ppp/active/${encodeURIComponent(name)}/history`
+      ),
+    getTraffic: (routerId: string, name: string, targetRouterId?: string) =>
+      request<{ success: boolean; data: SessionTrafficInfo }>(
+        `/api/routers/${encodeURIComponent(routerId)}/ppp/active/${encodeURIComponent(name)}/traffic${
+          targetRouterId ? `?routerId=${encodeURIComponent(targetRouterId)}` : ''
+        }`
       ),
   },
 

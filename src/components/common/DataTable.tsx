@@ -123,8 +123,19 @@ export function uptimeComparator(rowA: any, rowB: any, columnId: string) {
   return parseSeconds(rowA.getValue(columnId)) - parseSeconds(rowB.getValue(columnId));
 }
 
-// Comparator for bandwidth rate / numeric limits (e.g. "10M/10M", "100M", "512k")
+// Comparator for bandwidth rate / numeric limits (e.g. "10M/10M", "100M", "512k", "1.2 Mbps")
 export function bandwidthComparator(rowA: any, rowB: any, columnId: string) {
+  if (columnId === 'txRate' || columnId === 'downloadRate') {
+    const bpsA = rowA.original?.txBps;
+    const bpsB = rowB.original?.txBps;
+    if (typeof bpsA === 'number' && typeof bpsB === 'number') return bpsA - bpsB;
+  }
+  if (columnId === 'rxRate' || columnId === 'uploadRate') {
+    const bpsA = rowA.original?.rxBps;
+    const bpsB = rowB.original?.rxBps;
+    if (typeof bpsA === 'number' && typeof bpsB === 'number') return bpsA - bpsB;
+  }
+
   const parseRate = (str: string): number => {
     if (!str) return 0;
     const firstPart = str.split('/')[0].trim();

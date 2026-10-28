@@ -7,6 +7,7 @@ import {
   PppProfile,
   SimpleQueue,
   IpPool,
+  SessionTrafficInfo,
 } from './types.js';
 
 export class RouterosApiDriver implements IRouterDriver {
@@ -44,7 +45,15 @@ export class RouterosApiDriver implements IRouterDriver {
       const args: any[] = [];
       for (const [k, v] of Object.entries(params)) {
         if (v !== undefined) {
-          args.push(`=${k}=${v}`);
+          if (k.startsWith('?')) {
+            // RouterOS API Query word (e.g. ?name=foo or ?disabled=yes, must NOT have leading '=')
+            args.push(v === '' ? k : `${k}=${v}`);
+          } else if (v === true && (k === 'once' || k === 'detail')) {
+            // Boolean flags without value
+            args.push(`=${k}=`);
+          } else {
+            args.push(`=${k}=${v}`);
+          }
         }
       }
       const res = await conn.write(cmd, args);
@@ -273,10 +282,110 @@ export class RouterosApiDriver implements IRouterDriver {
         encoding: item.encoding,
         rxRate: formatRate(rxBps),
         txRate: formatRate(txBps),
+        rxBps,
+        txBps,
+        downloadRate: formatRate(txBps),
+        uploadRate: formatRate(rxBps),
+        interfaceName: `<pppoe-${item.name}>`,
         routerId: this.config.id,
         routerName: this.config.name,
       };
     });
+  }
+
+  async getSessionTraffic(name: string): Promise<SessionTrafficInfo> {
+    const ifaceName = `<pppoe-${name}>`;
+    let rxBps = 0; // Router Rx = Client Upload
+    let txBps = 0; // Router Tx = Client Download
+    let rxBytes: number | undefined;
+    let txBytes: number | undefined;
+    let connected = false;
+
+    try {
+      // 1. Check whether session is active via direct query or active list
+      const activeList = await this.runCommand('ppp/active', 'print', { '?name': name }).catch(() => []);
+      if (Array.isArray(activeList) && activeList.length > 0) {
+        connected = true;
+      } else {
+        // Fallback to active sessions print to accommodate different RouterOS versions
+        const allActive = await this.getActive().catch(() => []);
+        const found = allActive.find((a) => a.name === name || a.name.toLowerCase() === name.toLowerCase());
+        if (found) {
+          connected = true;
+          rxBps = found.rxBps || 0;
+          txBps = found.txBps || 0;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (connected) {
+      // 2. Try real-time interface monitor-traffic
+      try {
+        const mon = await this.runCommand('interface', 'monitor-traffic', {
+          interface: ifaceName,
+          once: true,
+        }).catch(() => []);
+        if (Array.isArray(mon) && mon.length > 0) {
+          const rawRx = Number(mon[0]['rx-bits-per-second']) || 0;
+          const rawTx = Number(mon[0]['tx-bits-per-second']) || 0;
+          if (rawRx > 0 || rawTx > 0) {
+            rxBps = rawRx;
+            txBps = rawTx;
+          }
+        }
+      } catch {
+        // monitor-traffic not available or insufficient permissions, fall back to simple queue
+      }
+
+      // 3. Fall back to queue/simple if 0 or monitor-traffic failed
+      if (rxBps === 0 && txBps === 0) {
+        try {
+          const queues = await this.runCommand('queue/simple', 'print', { '?name': ifaceName }).catch(() => []);
+          const q = Array.isArray(queues) && queues.find((item: any) => item && (item.name === ifaceName || item.name === name));
+          if (q) {
+            if (q.rate) {
+              const parts = String(q.rate).split('/');
+              if (parts.length >= 2) {
+                rxBps = Number(parts[0]) || 0;
+                txBps = Number(parts[1]) || 0;
+              }
+            }
+            if (q.bytes) {
+              const byteParts = String(q.bytes).split('/');
+              if (byteParts.length >= 2) {
+                rxBytes = Number(byteParts[0]) || 0;
+                txBytes = Number(byteParts[1]) || 0;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const formatRate = (bps: number): string => {
+      if (!bps || bps <= 0) return '0 bps';
+      if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(2)} Gbps`;
+      if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+      if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} kbps`;
+      return `${Math.round(bps)} bps`;
+    };
+
+    return {
+      name,
+      interfaceName: ifaceName,
+      connected,
+      rxBps,
+      txBps,
+      uploadRate: formatRate(rxBps),
+      downloadRate: formatRate(txBps),
+      rxBytes,
+      txBytes,
+      timestamp: Date.now(),
+    };
   }
 
   async disconnectActive(name: string): Promise<boolean> {

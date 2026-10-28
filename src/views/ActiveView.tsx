@@ -3,7 +3,7 @@ import { ColumnDef } from '@tanstack/react-table';
 import { useRouterContext } from '../context/RouterContext.tsx';
 import { api } from '../api/client.ts';
 import { PppActive } from '../types/index.ts';
-import { DataTable, ipAddressComparator, uptimeComparator } from '../components/common/DataTable.tsx';
+import { DataTable, ipAddressComparator, uptimeComparator, bandwidthComparator } from '../components/common/DataTable.tsx';
 import { ConfirmDialog } from '../components/common/ConfirmDialog.tsx';
 import { useToast } from '../components/common/Toast.tsx';
 import { ActiveSessionDetailModal } from '../components/active/ActiveSessionDetailModal.tsx';
@@ -217,26 +217,36 @@ export const ActiveView: React.FC = () => {
         ),
       },
       {
-        accessorKey: 'rxRate',
-        header: 'Rx Rate (Download)',
-        cell: ({ getValue }) => {
-          const val = String(getValue() || '—');
+        accessorKey: 'txRate',
+        header: 'Download (Tx)',
+        sortingFn: bandwidthComparator,
+        cell: ({ row }) => {
+          const s = row.original;
+          const val = s.downloadRate || s.txRate || '—';
           return (
-            <div className="flex items-center gap-1 font-mono text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums">
-              <ArrowDownLeft className="w-3 h-3" />
+            <div
+              className="flex items-center gap-1 font-mono text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums"
+              title="Download menuju klien (MikroTik Tx Rate)"
+            >
+              <ArrowDownLeft className="w-3.5 h-3.5" />
               <span>{val}</span>
             </div>
           );
         },
       },
       {
-        accessorKey: 'txRate',
-        header: 'Tx Rate (Upload)',
-        cell: ({ getValue }) => {
-          const val = String(getValue() || '—');
+        accessorKey: 'rxRate',
+        header: 'Upload (Rx)',
+        sortingFn: bandwidthComparator,
+        cell: ({ row }) => {
+          const s = row.original;
+          const val = s.uploadRate || s.rxRate || '—';
           return (
-            <div className="flex items-center gap-1 font-mono text-sky-600 dark:text-sky-400 font-semibold tabular-nums">
-              <ArrowUpRight className="w-3 h-3" />
+            <div
+              className="flex items-center gap-1 font-mono text-sky-600 dark:text-sky-400 font-semibold tabular-nums"
+              title="Upload dari klien (MikroTik Rx Rate)"
+            >
+              <ArrowUpRight className="w-3.5 h-3.5" />
               <span>{val}</span>
             </div>
           );

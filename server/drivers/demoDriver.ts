@@ -7,6 +7,7 @@ import {
   PppProfile,
   SimpleQueue,
   IpPool,
+  SessionTrafficInfo,
 } from './types.js';
 import { storage } from '../storage.js';
 
@@ -366,45 +367,141 @@ export class DemoDriver implements IRouterDriver {
     return true;
   }
 
+  private static sessionCounters: Map<string, { rxBytes: number; txBytes: number; lastTime: number }> = new Map();
+
   async getActive(): Promise<PppActive[]> {
     // Generate realistic, consistent rates based on each secret's profile limit
     const secretMap = new Map(this.secrets.map((s) => [s.name, s]));
+    const now = Date.now();
 
     return this.activeSessions.map((session) => {
       const sec = secretMap.get(session.name);
       const profName = sec?.profile || '';
 
-      // Determine nominal speed based on package
-      let nominalDown = 18;
-      let nominalUp = 5;
+      // Determine nominal speed based on package (Tx = Download, Rx = Upload)
+      let nominalDown = 18.0;
+      let nominalUp = 5.0;
       if (profName.includes('10M')) {
-        nominalDown = 8.5;
+        nominalDown = 8.8;
         nominalUp = 2.4;
       } else if (profName.includes('20M')) {
-        nominalDown = 17.5;
+        nominalDown = 18.2;
         nominalUp = 5.2;
       } else if (profName.includes('50M')) {
-        nominalDown = 42.0;
+        nominalDown = 44.0;
         nominalUp = 12.0;
       } else if (profName.includes('100M') || profName.includes('Bisnis')) {
-        nominalDown = 84.0;
-        nominalUp = 35.0;
+        nominalDown = 86.0;
+        nominalUp = 36.0;
       }
 
-      // Smooth realistic variance (+/- 10%)
-      const variance = (Math.sin(Date.now() / 8000 + session.name.length) * 0.15);
-      const rx = Math.max(0.4, +(nominalUp * (0.7 + variance)).toFixed(1));
-      const tx = Math.max(1.0, +(nominalDown * (0.75 + variance)).toFixed(1));
+      // Smooth realistic variance (+/- 12%)
+      const hash = session.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+      const variance = Math.sin(now / 5000 + hash) * 0.12;
+      const rxMbps = Math.max(0.3, +(nominalUp * (0.7 + variance)).toFixed(1)); // Upload (Router Rx)
+      const txMbps = Math.max(0.8, +(nominalDown * (0.75 + variance)).toFixed(1)); // Download (Router Tx)
+      const rxBps = Math.round(rxMbps * 1_000_000);
+      const txBps = Math.round(txMbps * 1_000_000);
 
       return {
         ...session,
-        rxRate: `${rx} Mbps`,
-        txRate: `${tx} Mbps`,
+        rxRate: `${rxMbps} Mbps`,
+        txRate: `${txMbps} Mbps`,
+        rxBps,
+        txBps,
+        downloadRate: `${txMbps} Mbps`,
+        uploadRate: `${rxMbps} Mbps`,
+        interfaceName: `<pppoe-${session.name}>`,
         routerId: this.config.id,
         routerName: this.config.name,
       };
     });
   }
+
+  async getSessionTraffic(name: string): Promise<SessionTrafficInfo> {
+    const session = this.activeSessions.find((a) => a.name === name);
+    const ifaceName = `<pppoe-${name}>`;
+    const now = Date.now();
+
+    if (!session) {
+      return {
+        name,
+        interfaceName: ifaceName,
+        connected: false,
+        rxBps: 0,
+        txBps: 0,
+        uploadRate: '0 bps',
+        downloadRate: '0 bps',
+        timestamp: now,
+      };
+    }
+
+    const sec = this.secrets.find((s) => s.name === name);
+    const profName = sec?.profile || '';
+
+    let nominalDown = 18.0;
+    let nominalUp = 5.0;
+    if (profName.includes('10M')) {
+      nominalDown = 8.8;
+      nominalUp = 2.4;
+    } else if (profName.includes('20M')) {
+      nominalDown = 18.2;
+      nominalUp = 5.2;
+    } else if (profName.includes('50M')) {
+      nominalDown = 44.0;
+      nominalUp = 12.0;
+    } else if (profName.includes('100M') || profName.includes('Bisnis')) {
+      nominalDown = 86.0;
+      nominalUp = 36.0;
+    }
+
+    // Dynamic wave with secondary harmonics for organic real-world telemetry feel
+    const hash = name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    const primary = Math.sin(now / 3500 + hash) * 0.15;
+    const secondary = Math.cos(now / 1800 + hash) * 0.08;
+    const factor = Math.max(0.2, 0.72 + primary + secondary);
+
+    const rxBps = Math.round(Math.max(120_000, nominalUp * 1_000_000 * factor)); // Client Upload (Rx)
+    const txBps = Math.round(Math.max(450_000, nominalDown * 1_000_000 * factor)); // Client Download (Tx)
+
+    // Update cumulative byte counters
+    const counterKey = `${this.config.id}:${name}`;
+    let counter = DemoDriver.sessionCounters.get(counterKey);
+    if (!counter) {
+      counter = {
+        rxBytes: Math.floor(Math.random() * 500_000_000 + 100_000_000),
+        txBytes: Math.floor(Math.random() * 2_000_000_000 + 500_000_000),
+        lastTime: now - 1500,
+      };
+    }
+    const elapsedSec = Math.max(0.1, (now - counter.lastTime) / 1000);
+    counter.rxBytes += Math.round((rxBps / 8) * elapsedSec);
+    counter.txBytes += Math.round((txBps / 8) * elapsedSec);
+    counter.lastTime = now;
+    DemoDriver.sessionCounters.set(counterKey, counter);
+
+    const formatRate = (bps: number): string => {
+      if (!bps || bps <= 0) return '0 bps';
+      if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(2)} Gbps`;
+      if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+      if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} kbps`;
+      return `${Math.round(bps)} bps`;
+    };
+
+    return {
+      name,
+      interfaceName: ifaceName,
+      connected: true,
+      rxBps,
+      txBps,
+      uploadRate: formatRate(rxBps),
+      downloadRate: formatRate(txBps),
+      rxBytes: counter.rxBytes,
+      txBytes: counter.txBytes,
+      timestamp: now,
+    };
+  }
+
 
   async disconnectActive(name: string): Promise<boolean> {
     const initialLen = this.activeSessions.length;
