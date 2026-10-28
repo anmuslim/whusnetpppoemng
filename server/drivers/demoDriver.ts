@@ -212,6 +212,10 @@ export class DemoDriver implements IRouterDriver {
         : `${baseSubnet}.20.${octet}`;
 
       const mac = `68:D7:9A:${Math.floor(Math.random() * 89 + 10)}:${Math.floor(Math.random() * 89 + 10)}:${String(i).padStart(2, '0')}`;
+      const hasLoggedOut = isDisabled || i % 3 === 0;
+      const logoutDate = hasLoggedOut
+        ? `2026-10-${String(Math.floor(18 + (i % 8))).padStart(2, '0')} ${String(Math.floor((i % 14) + 8)).padStart(2, '0')}:${String((i * 7) % 60).padStart(2, '0')}:15`
+        : undefined;
 
       this.secrets.push({
         name: username,
@@ -219,10 +223,11 @@ export class DemoDriver implements IRouterDriver {
         service: 'pppoe',
         profile: profile,
         remoteAddress: remoteIp,
-        callerId: mac,
+        callerId: i % 4 === 0 ? mac : undefined,
+        lastCallerId: mac,
         disabled: isDisabled,
         comment: isDisabled ? 'Nonaktif: Tunggakan billing' : i % 5 === 0 ? 'Pelanggan FTTH OLT-01' : 'Pelanggan Reguler',
-        lastLoggedOut: isDisabled ? '2026-10-18 14:22:10' : undefined,
+        lastLoggedOut: logoutDate,
         routerId: this.config.id,
         routerName: this.config.name,
       });
@@ -239,6 +244,7 @@ export class DemoDriver implements IRouterDriver {
         this.activeSessions.push({
           name: username,
           service: 'pppoe',
+          profile: profile,
           callerId: mac,
           address: remoteIp,
           uptime: days > 0 ? `${days}d ${hrs}h ${mins}m` : `${hrs}h ${mins}m`,
@@ -299,6 +305,7 @@ export class DemoDriver implements IRouterDriver {
     const activeNames = new Set(this.activeSessions.map((a) => a.name));
     return this.secrets.map((s) => ({
       ...s,
+      lastCallerId: s.lastCallerId || s.callerId,
       routerId: this.config.id,
       routerName: this.config.name,
       isActive: activeNames.has(s.name),
@@ -313,6 +320,7 @@ export class DemoDriver implements IRouterDriver {
       ...secret,
       service: secret.service || 'pppoe',
       disabled: Boolean(secret.disabled),
+      lastCallerId: secret.lastCallerId || secret.callerId,
       routerId: this.config.id,
       routerName: this.config.name,
     };
@@ -376,7 +384,7 @@ export class DemoDriver implements IRouterDriver {
 
     return this.activeSessions.map((session) => {
       const sec = secretMap.get(session.name);
-      const profName = sec?.profile || '';
+      const profName = session.profile || sec?.profile || 'default';
 
       // Determine nominal speed based on package (Tx = Download, Rx = Upload)
       let nominalDown = 18.0;
@@ -405,6 +413,7 @@ export class DemoDriver implements IRouterDriver {
 
       return {
         ...session,
+        profile: profName,
         rxRate: `${rxMbps} Mbps`,
         txRate: `${txMbps} Mbps`,
         rxBps,
@@ -685,5 +694,52 @@ export class DemoDriver implements IRouterDriver {
     const removed = this.pools.length < initialLen;
     if (removed) this.persist();
     return removed;
+  }
+
+  async ping(address: string, count: number = 4, size: number = 32) {
+    const packetCount = Math.max(1, Math.min(20, Number(count) || 4));
+    const packets = [];
+    let received = 0;
+    let minRtt = Infinity;
+    let maxRtt = 0;
+    let sumRtt = 0;
+
+    for (let i = 1; i <= packetCount; i++) {
+      const baseMs = 1.8 + Math.random() * 5.2;
+      const jitter = (i % 4 === 0 ? Math.random() * 4.8 : 0);
+      const timeMs = +(baseMs + jitter).toFixed(1);
+      const ttl = 64;
+
+      minRtt = Math.min(minRtt, timeMs);
+      maxRtt = Math.max(maxRtt, timeMs);
+      sumRtt += timeMs;
+      received++;
+
+      packets.push({
+        seq: i,
+        host: address,
+        size: Number(size) || 32,
+        ttl,
+        timeMs,
+        status: 'reply' as const,
+      });
+    }
+
+    const avgRtt = +(sumRtt / received).toFixed(1);
+    const packetLoss = +(((packetCount - received) / packetCount) * 100).toFixed(0);
+
+    return {
+      target: address,
+      routerName: this.config.name,
+      sent: packetCount,
+      received,
+      lost: packetCount - received,
+      packetLoss,
+      minRtt: minRtt === Infinity ? 0 : minRtt,
+      avgRtt,
+      maxRtt,
+      packets,
+      timestamp: Date.now(),
+    };
   }
 }

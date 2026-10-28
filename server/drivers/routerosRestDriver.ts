@@ -158,6 +158,7 @@ export class RouterosRestDriver implements IRouterDriver {
       localAddress: item['local-address'],
       remoteAddress: item['remote-address'],
       callerId: item['caller-id'],
+      lastCallerId: item['last-caller-id'] || item['caller-id'],
       disabled: item.disabled === 'true' || item.disabled === true,
       comment: item.comment,
       lastLoggedOut: item['last-logged-out'],
@@ -224,10 +225,20 @@ export class RouterosRestDriver implements IRouterDriver {
   private static trafficCache: Map<string, { rxBytes: number; txBytes: number; timestamp: number }> = new Map();
 
   async getActive(): Promise<PppActive[]> {
-    const [rawActive, rawQueues] = await Promise.all([
+    const [rawActive, rawQueues, rawSecrets] = await Promise.all([
       this.request<any[]>('/ppp/active').catch(() => []),
       this.request<any[]>('/queue/simple').catch(() => []),
+      this.request<any[]>('/ppp/secret').catch(() => []),
     ]);
+
+    const secretProfileMap = new Map<string, string>();
+    if (Array.isArray(rawSecrets)) {
+      for (const s of rawSecrets) {
+        if (s && s.name && s.profile) {
+          secretProfileMap.set(String(s.name).toLowerCase(), String(s.profile));
+        }
+      }
+    }
 
     const queueMap = new Map<string, any>();
     if (Array.isArray(rawQueues)) {
@@ -295,6 +306,7 @@ export class RouterosRestDriver implements IRouterDriver {
       return {
         name: item.name,
         service: item.service || 'pppoe',
+        profile: item.profile || secretProfileMap.get(String(item.name || '').toLowerCase()) || 'default',
         callerId: item['caller-id'],
         address: item.address,
         uptime: item.uptime,
@@ -581,5 +593,78 @@ export class RouterosRestDriver implements IRouterDriver {
       method: 'DELETE',
     });
     return true;
+  }
+
+  async ping(address: string, count: number = 4, size: number = 32) {
+    const packetCount = Math.max(1, Math.min(20, Number(count) || 4));
+    try {
+      // In RouterOS REST API, ping can be executed via POST /rest/ping or fallback
+      const rawResults = await this.request<any[]>('/ping', {
+        method: 'POST',
+        body: JSON.stringify({
+          address,
+          count: packetCount,
+          size: Number(size) || 32,
+        }),
+      });
+
+      const resList = Array.isArray(rawResults) ? rawResults : [rawResults];
+      const packets: any[] = [];
+      let received = 0;
+      let minRtt = Infinity;
+      let maxRtt = 0;
+      let sumRtt = 0;
+
+      resList.forEach((item, idx) => {
+        if (!item) return;
+        const host = item.host || address;
+        const sz = Number(item.size) || Number(size) || 32;
+        const ttl = Number(item.ttl) || 64;
+        let timeMs = 0;
+        if (item.time) {
+          const match = String(item.time).match(/([\d.]+)\s*ms/);
+          if (match) {
+            timeMs = parseFloat(match[1]);
+          } else {
+            timeMs = parseFloat(item.time) || 0;
+          }
+        }
+        const status = item.status || (timeMs > 0 || item.ttl ? 'reply' : 'timeout');
+        if (status === 'reply' || timeMs > 0 || item.ttl) {
+          received++;
+          minRtt = Math.min(minRtt, timeMs);
+          maxRtt = Math.max(maxRtt, timeMs);
+          sumRtt += timeMs;
+        }
+
+        packets.push({
+          seq: idx + 1,
+          host,
+          size: sz,
+          ttl,
+          timeMs,
+          status,
+        });
+      });
+
+      const avgRtt = received > 0 ? +(sumRtt / received).toFixed(1) : 0;
+      const packetLoss = +(((packetCount - received) / packetCount) * 100).toFixed(0);
+
+      return {
+        target: address,
+        routerName: this.config.name,
+        sent: packetCount,
+        received,
+        lost: packetCount - received,
+        packetLoss,
+        minRtt: minRtt === Infinity ? 0 : minRtt,
+        avgRtt,
+        maxRtt,
+        packets,
+        timestamp: Date.now(),
+      };
+    } catch (err: any) {
+      throw new Error(`MikroTik REST Ping gagal: ${err.message}`);
+    }
   }
 }

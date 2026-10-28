@@ -24,6 +24,8 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   Users,
+  Clock,
+  Radio,
 } from 'lucide-react';
 
 export const SecretsView: React.FC = () => {
@@ -390,12 +392,56 @@ export const SecretsView: React.FC = () => {
       },
       {
         accessorKey: 'callerId',
-        header: 'Caller ID / MAC',
-        cell: ({ getValue }) => (
-          <span className="font-mono text-[10px] text-slate-500 dark:text-zinc-400">
-            {String(getValue() || '—')}
-          </span>
-        ),
+        header: 'Caller ID (Bind)',
+        size: 130,
+        cell: ({ getValue }) => {
+          const val = String(getValue() || '');
+          return (
+            <span className="font-mono text-[10px] text-slate-500 dark:text-zinc-400">
+              {val || '—'}
+            </span>
+          );
+        },
+      },
+      {
+        accessorKey: 'lastCallerId',
+        header: 'Last Caller ID',
+        size: 135,
+        cell: ({ row }) => {
+          const s = row.original;
+          const val = s.lastCallerId || s.callerId || '';
+          if (!val) return <span className="text-[10px] text-slate-400 font-mono italic">—</span>;
+          return (
+            <span className="font-mono text-[10px] font-medium text-slate-800 dark:text-zinc-200 bg-slate-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded-sm">
+              {val}
+            </span>
+          );
+        },
+      },
+      {
+        accessorKey: 'lastLoggedOut',
+        header: 'Last Logout',
+        size: 140,
+        cell: ({ row }) => {
+          const s = row.original;
+          if (s.isActive) {
+            return (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
+                <Radio className="w-2.5 h-2.5 animate-pulse" />
+                <span>Sedang Online</span>
+              </span>
+            );
+          }
+          if (!s.lastLoggedOut) {
+            return <span className="text-[10px] text-slate-400 font-mono italic">Belum ada</span>;
+          }
+          return (
+            <div className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-zinc-300 font-mono">
+              <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+              <span>{s.lastLoggedOut}</span>
+            </div>
+          );
+        },
       },
       {
         accessorKey: 'comment',
@@ -404,13 +450,6 @@ export const SecretsView: React.FC = () => {
           const val = String(getValue() || '');
           return <span className="text-slate-500 dark:text-zinc-400 truncate max-w-[180px] block">{val || '—'}</span>;
         },
-      },
-      {
-        accessorKey: 'lastLoggedOut',
-        header: 'Last Logged Out',
-        cell: ({ getValue }) => (
-          <span className="text-[10px] text-slate-400 font-mono">{String(getValue() || '—')}</span>
-        ),
       },
     ];
 
@@ -553,6 +592,23 @@ export const SecretsView: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSaveSecret} className="space-y-4 text-xs">
+          {editingSecret && (
+            <div className="p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-lg border border-slate-200 dark:border-zinc-700 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+              <div>
+                <span className="text-slate-400 block text-[10px]">Last Caller ID (MAC Dial-in):</span>
+                <span className="font-mono font-semibold text-slate-800 dark:text-zinc-200">
+                  {editingSecret.lastCallerId || editingSecret.callerId || 'Belum ada dial-in'}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px]">Last Logout:</span>
+                <span className="font-mono font-semibold text-slate-800 dark:text-zinc-200">
+                  {editingSecret.lastLoggedOut || 'Belum pernah log out'}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Router Target Selection if in Multi-Router view */}
           {isMultiRouter && (
             <div>

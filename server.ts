@@ -19,16 +19,21 @@ import { storage } from './server/storage.js';
 
 dotenv.config();
 
+// Prevent socket resets or asynchronous router connection timeouts from abruptly terminating the server process
+process.on('unhandledRejection', (reason) => {
+  console.warn('⚠️  [Process Warning] Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.warn('⚠️  [Process Warning] Uncaught Exception:', err?.message || err);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
-  // Inisialisasi storage (MySQL jika dikonfigurasi, atau JSON fallback)
-  await storage.init();
-
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
   const isProduction = process.env.NODE_ENV === 'production';
+  const PORT = 3000;
 
   // Body parsers with safety limits
   app.use(express.json({ limit: '10mb' }));
@@ -93,6 +98,10 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 PPPoE Manager server berjalan pada http://0.0.0.0:${PORT}`);
+    // Inisialisasi storage (MySQL jika dikonfigurasi, atau JSON fallback)
+    storage.init().catch((err) => {
+      console.warn('Storage init fallback note:', err.message);
+    });
   });
 }
 

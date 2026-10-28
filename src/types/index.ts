@@ -29,6 +29,7 @@ export interface PppSecret {
   localAddress?: string;
   remoteAddress?: string;
   callerId?: string;
+  lastCallerId?: string;
   disabled: boolean;
   comment?: string;
   lastLoggedOut?: string;
@@ -40,6 +41,7 @@ export interface PppSecret {
 export interface PppActive {
   name: string;
   service: string;
+  profile?: string;
   callerId?: string;
   address?: string;
   uptime?: string;
@@ -189,3 +191,27 @@ export interface SessionHistoryItem {
   ipAddress: string;
   details?: string;
 }
+
+export interface PingPacket {
+  seq: number;
+  host: string;
+  size: number;
+  ttl: number;
+  timeMs: number;
+  status?: string;
+}
+
+export interface PingResult {
+  target: string;
+  routerName?: string;
+  sent: number;
+  received: number;
+  lost: number;
+  packetLoss: number;
+  minRtt: number;
+  avgRtt: number;
+  maxRtt: number;
+  packets: PingPacket[];
+  timestamp: number;
+}
+

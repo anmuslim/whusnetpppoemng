@@ -86,9 +86,9 @@ class RouterConnectionManager {
 
     const promises = targets.map(async ({ config, driver }) => {
       try {
-        // Enforce 6-second timeout per router
+        // Enforce 12-second timeout per router to allow slow links, large secret lists, and diagnostics
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout menghubungi router ${config.name} (${config.host})`)), 6000)
+          setTimeout(() => reject(new Error(`Timeout menghubungi router ${config.name} (${config.host})`)), 12000)
         );
         const data = await Promise.race([action(driver, config), timeoutPromise]);
         results.push(...data);

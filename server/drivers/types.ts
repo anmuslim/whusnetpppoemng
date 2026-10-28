@@ -51,6 +51,7 @@ export interface PppSecret {
   localAddress?: string;
   remoteAddress?: string;
   callerId?: string;
+  lastCallerId?: string;
   disabled: boolean;
   comment?: string;
   lastLoggedOut?: string;
@@ -62,6 +63,7 @@ export interface PppSecret {
 export interface PppActive {
   name: string;
   service: string;
+  profile?: string;
   callerId?: string;
   address?: string;
   uptime?: string;

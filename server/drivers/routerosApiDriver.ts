@@ -19,7 +19,7 @@ export class RouterosApiDriver implements IRouterDriver {
     this.password = password;
   }
 
-  private async getClient(): Promise<any> {
+  private async getClient(timeoutSec: number = 10): Promise<any> {
     try {
       const routeros = await import('node-routeros');
       const RouterOSAPI = (routeros as any).RouterOSAPI || (routeros as any).default?.RouterOSAPI || routeros;
@@ -28,9 +28,15 @@ export class RouterosApiDriver implements IRouterDriver {
         user: this.config.username,
         password: this.password || '',
         port: this.config.port || (this.config.mode === 'API-SSL' ? 8729 : 8728),
-        timeout: 5,
+        timeout: timeoutSec,
         tls: this.config.mode === 'API-SSL' ? { rejectUnauthorized: false } : undefined,
       });
+
+      // Crucial: Register dummy error handler to prevent Node.js Unhandled Error event crash
+      conn.on('error', (_err: any) => {
+        // Suppress unhandled socket error event on disconnect or timeout
+      });
+
       await conn.connect();
       return conn;
     } catch (err: any) {
@@ -148,6 +154,7 @@ export class RouterosApiDriver implements IRouterDriver {
       localAddress: item['local-address'],
       remoteAddress: item['remote-address'],
       callerId: item['caller-id'],
+      lastCallerId: item['last-caller-id'] || item['caller-id'],
       disabled: item.disabled === 'true' || item.disabled === true,
       comment: item.comment,
       lastLoggedOut: item['last-logged-out'],
@@ -206,10 +213,46 @@ export class RouterosApiDriver implements IRouterDriver {
   private static trafficCache: Map<string, { rxBytes: number; txBytes: number; timestamp: number }> = new Map();
 
   async getActive(): Promise<PppActive[]> {
-    const [rawActive, rawQueues] = await Promise.all([
-      this.runCommand('ppp/active', 'print'),
-      this.runCommand('queue/simple', 'print').catch(() => []),
-    ]);
+    let rawActive: any[] = [];
+    let rawQueues: any[] = [];
+    let rawSecrets: any[] = [];
+
+    let conn: any = null;
+    try {
+      conn = await this.getClient(12);
+      try {
+        const a = await conn.write('/ppp/active/print');
+        rawActive = Array.isArray(a) ? a : [a];
+      } catch (err) {
+        throw err;
+      }
+      try {
+        const q = await conn.write('/queue/simple/print');
+        rawQueues = Array.isArray(q) ? q : [q];
+      } catch {}
+      try {
+        const s = await conn.write('/ppp/secret/print');
+        rawSecrets = Array.isArray(s) ? s : [s];
+      } catch {}
+    } catch {
+      // Fallback sequentially with separate connections if single session failed
+      rawActive = await this.runCommand('ppp/active', 'print');
+      rawQueues = await this.runCommand('queue/simple', 'print').catch(() => []);
+      rawSecrets = await this.runCommand('ppp/secret', 'print').catch(() => []);
+    } finally {
+      if (conn) {
+        try {
+          await conn.close();
+        } catch {}
+      }
+    }
+
+    const secretProfileMap = new Map<string, string>();
+    for (const s of rawSecrets) {
+      if (s && s.name && s.profile) {
+        secretProfileMap.set(String(s.name).toLowerCase(), String(s.profile));
+      }
+    }
 
     // Build lookup map from queues by name and target
     const queueMap = new Map<string, any>();
@@ -276,6 +319,7 @@ export class RouterosApiDriver implements IRouterDriver {
       return {
         name: item.name,
         service: item.service || 'pppoe',
+        profile: item.profile || secretProfileMap.get(String(item.name || '').toLowerCase()) || 'default',
         callerId: item['caller-id'],
         address: item.address,
         uptime: item.uptime,
@@ -301,68 +345,78 @@ export class RouterosApiDriver implements IRouterDriver {
     let txBytes: number | undefined;
     let connected = false;
 
+    let conn: any = null;
     try {
-      // 1. Check whether session is active via direct query or active list
-      const activeList = await this.runCommand('ppp/active', 'print', { '?name': name }).catch(() => []);
-      if (Array.isArray(activeList) && activeList.length > 0) {
-        connected = true;
-      } else {
-        // Fallback to active sessions print to accommodate different RouterOS versions
-        const allActive = await this.getActive().catch(() => []);
-        const found = allActive.find((a) => a.name === name || a.name.toLowerCase() === name.toLowerCase());
-        if (found) {
+      conn = await this.getClient(8);
+
+      // 1. Check whether session is active via direct query
+      try {
+        const actRes = await conn.write('/ppp/active/print', [`?name=${name}`]);
+        const activeList = Array.isArray(actRes) ? actRes : [actRes];
+        if (activeList.length > 0 && activeList[0]?.name) {
           connected = true;
-          rxBps = found.rxBps || 0;
-          txBps = found.txBps || 0;
+        }
+      } catch {}
+
+      // Fallback check all active if query by name failed
+      if (!connected) {
+        try {
+          const actAll = await conn.write('/ppp/active/print');
+          const list = Array.isArray(actAll) ? actAll : [actAll];
+          const found = list.find((a: any) => a && (a.name === name || String(a.name).toLowerCase() === name.toLowerCase()));
+          if (found) {
+            connected = true;
+          }
+        } catch {}
+      }
+
+      if (connected) {
+        // 2. Try real-time interface monitor-traffic
+        try {
+          const monRes = await conn.write('/interface/monitor-traffic', [`=interface=${ifaceName}`, '=once=']);
+          const mon = Array.isArray(monRes) ? monRes : [monRes];
+          if (mon.length > 0 && mon[0]) {
+            const rawRx = Number(mon[0]['rx-bits-per-second']) || 0;
+            const rawTx = Number(mon[0]['tx-bits-per-second']) || 0;
+            if (rawRx > 0 || rawTx > 0) {
+              rxBps = rawRx;
+              txBps = rawTx;
+            }
+          }
+        } catch {}
+
+        // 3. Fall back to queue/simple if 0 or monitor-traffic failed
+        if (rxBps === 0 && txBps === 0) {
+          try {
+            const qRes = await conn.write('/queue/simple/print', [`?name=${ifaceName}`]);
+            const queues = Array.isArray(qRes) ? qRes : [qRes];
+            const q = queues.find((item: any) => item && (item.name === ifaceName || item.name === name));
+            if (q) {
+              if (q.rate) {
+                const parts = String(q.rate).split('/');
+                if (parts.length >= 2) {
+                  rxBps = Number(parts[0]) || 0;
+                  txBps = Number(parts[1]) || 0;
+                }
+              }
+              if (q.bytes) {
+                const byteParts = String(q.bytes).split('/');
+                if (byteParts.length >= 2) {
+                  rxBytes = Number(byteParts[0]) || 0;
+                  txBytes = Number(byteParts[1]) || 0;
+                }
+              }
+            }
+          } catch {}
         }
       }
     } catch {
       // ignore
-    }
-
-    if (connected) {
-      // 2. Try real-time interface monitor-traffic
-      try {
-        const mon = await this.runCommand('interface', 'monitor-traffic', {
-          interface: ifaceName,
-          once: true,
-        }).catch(() => []);
-        if (Array.isArray(mon) && mon.length > 0) {
-          const rawRx = Number(mon[0]['rx-bits-per-second']) || 0;
-          const rawTx = Number(mon[0]['tx-bits-per-second']) || 0;
-          if (rawRx > 0 || rawTx > 0) {
-            rxBps = rawRx;
-            txBps = rawTx;
-          }
-        }
-      } catch {
-        // monitor-traffic not available or insufficient permissions, fall back to simple queue
-      }
-
-      // 3. Fall back to queue/simple if 0 or monitor-traffic failed
-      if (rxBps === 0 && txBps === 0) {
+    } finally {
+      if (conn) {
         try {
-          const queues = await this.runCommand('queue/simple', 'print', { '?name': ifaceName }).catch(() => []);
-          const q = Array.isArray(queues) && queues.find((item: any) => item && (item.name === ifaceName || item.name === name));
-          if (q) {
-            if (q.rate) {
-              const parts = String(q.rate).split('/');
-              if (parts.length >= 2) {
-                rxBps = Number(parts[0]) || 0;
-                txBps = Number(parts[1]) || 0;
-              }
-            }
-            if (q.bytes) {
-              const byteParts = String(q.bytes).split('/');
-              if (byteParts.length >= 2) {
-                rxBytes = Number(byteParts[0]) || 0;
-                txBytes = Number(byteParts[1]) || 0;
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
+          await conn.close();
+        } catch {}
       }
     }
 
@@ -539,5 +593,83 @@ export class RouterosApiDriver implements IRouterDriver {
     const id = await this.findItemId('ip/pool', name);
     await this.runCommand('ip/pool', 'remove', { '.id': id });
     return true;
+  }
+
+  async ping(address: string, count: number = 4, size: number = 32) {
+    const packetCount = Math.max(1, Math.min(10, Number(count) || 4));
+    const packetSize = Math.max(32, Math.min(1500, Number(size) || 32));
+    let conn: any = null;
+    try {
+      conn = await this.getClient(15);
+      const rawResults = await conn.write('/ping', [
+        `=address=${address}`,
+        `=count=${packetCount}`,
+        `=size=${packetSize}`,
+      ]);
+      const resList = Array.isArray(rawResults) ? rawResults : [rawResults];
+
+      const packets: any[] = [];
+      let received = 0;
+      let minRtt = Infinity;
+      let maxRtt = 0;
+      let sumRtt = 0;
+
+      resList.forEach((item, idx) => {
+        if (!item) return;
+        const host = item.host || address;
+        const sz = Number(item.size) || packetSize;
+        const ttl = Number(item.ttl) || 64;
+        let timeMs = 0;
+        if (item.time) {
+          const match = String(item.time).match(/([\d.]+)\s*ms/);
+          if (match) {
+            timeMs = parseFloat(match[1]);
+          } else {
+            timeMs = parseFloat(item.time) || 0;
+          }
+        }
+        const status = item.status || (timeMs > 0 || item.ttl ? 'reply' : 'timeout');
+        if (status === 'reply' || timeMs > 0 || item.ttl) {
+          received++;
+          minRtt = Math.min(minRtt, timeMs);
+          maxRtt = Math.max(maxRtt, timeMs);
+          sumRtt += timeMs;
+        }
+
+        packets.push({
+          seq: idx + 1,
+          host,
+          size: sz,
+          ttl,
+          timeMs,
+          status,
+        });
+      });
+
+      const avgRtt = received > 0 ? +(sumRtt / received).toFixed(1) : 0;
+      const packetLoss = +(((packetCount - received) / packetCount) * 100).toFixed(0);
+
+      return {
+        target: address,
+        routerName: this.config.name,
+        sent: packetCount,
+        received,
+        lost: packetCount - received,
+        packetLoss,
+        minRtt: minRtt === Infinity ? 0 : minRtt,
+        avgRtt,
+        maxRtt,
+        packets,
+        timestamp: Date.now(),
+      };
+    } catch (err: any) {
+      throw new Error(`MikroTik API Ping gagal: ${err.message}`);
+    } finally {
+      if (conn) {
+        try {
+          await conn.close();
+        } catch {}
+      }
+    }
   }
 }

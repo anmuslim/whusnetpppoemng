@@ -160,6 +160,38 @@ export const api = {
           targetRouterId ? `?routerId=${encodeURIComponent(targetRouterId)}` : ''
         }`
       ),
+    ping: (routerId: string, body: { address: string; count?: number; size?: number; targetRouterId?: string }) =>
+      request<{
+        success: boolean;
+        data: {
+          target: string;
+          routerName: string;
+          sent: number;
+          received: number;
+          lost: number;
+          packetLoss: number;
+          minRtt: number;
+          avgRtt: number;
+          maxRtt: number;
+          packets: Array<{
+            seq: number;
+            host: string;
+            size: number;
+            ttl: number;
+            timeMs: number;
+            status: 'reply' | 'timeout';
+          }>;
+          timestamp: number;
+        };
+      }>(
+        `/api/routers/${encodeURIComponent(routerId)}/ppp/active/ping${
+          body.targetRouterId ? `?routerId=${encodeURIComponent(body.targetRouterId)}` : ''
+        }`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ address: body.address, count: body.count, size: body.size }),
+        }
+      ),
   },
 
   profiles: {

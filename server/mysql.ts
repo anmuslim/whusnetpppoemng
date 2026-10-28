@@ -1,3 +1,4 @@
+import net from 'net';
 import mysql, { Pool, PoolOptions } from 'mysql2/promise';
 
 let pool: Pool | null = null;
@@ -20,7 +21,7 @@ export function getMySQLConfig(): PoolOptions {
     waitForConnections: true,
     connectionLimit: 15,
     queueLimit: 0,
-    connectTimeout: 10000,
+    connectTimeout: 800,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
     charset: 'utf8mb4',
@@ -41,16 +42,42 @@ export function getMySQLPool(): Pool | null {
 }
 
 export async function testMySQLConnection(): Promise<{ success: boolean; version?: string; error?: string }> {
+  const host = process.env.DB_HOST || process.env.MYSQL_HOST || '127.0.0.1';
+  const port = Number(process.env.DB_PORT || process.env.MYSQL_PORT) || 3306;
+
+  // Ultra-fast socket pre-check with 350ms timeout to avoid any server startup blocking
+  const portOpen = await new Promise<boolean>((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(350);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+
+  if (!portOpen) {
+    return { success: false, error: `MySQL port ${port} pada ${host} tidak dapat dihubungi (ECONNREFUSED/timeout).` };
+  }
+
   try {
     const p = getMySQLPool();
     if (!p) {
-      return { success: false, error: 'MySQL configuration is not set in environment.' };
+      return { success: false, error: 'Konfigurasi MySQL belum lengkap.' };
     }
     const [rows] = await p.query('SELECT VERSION() as version');
     const version = (rows as any[])[0]?.version || 'Unknown';
     return { success: true, version };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Cannot connect to MySQL server' };
+    return { success: false, error: err.message || 'Gagal tersambung ke MySQL' };
   }
 }
 

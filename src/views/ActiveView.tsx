@@ -197,6 +197,18 @@ export const ActiveView: React.FC = () => {
         },
       },
       {
+        accessorKey: 'profile',
+        header: 'Profile',
+        cell: ({ getValue }) => {
+          const prof = String(getValue() || 'default');
+          return (
+            <span className="px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-[11px] font-mono font-medium whitespace-nowrap">
+              {prof}
+            </span>
+          );
+        },
+      },
+      {
         accessorKey: 'callerId',
         header: 'Caller ID / MAC',
         cell: ({ getValue }) => (
@@ -371,7 +383,7 @@ export const ActiveView: React.FC = () => {
         columns={columns}
         tableId="ppp_active"
         loading={loading}
-        searchPlaceholder="Cari username aktif, IP, caller ID..."
+        searchPlaceholder="Cari username aktif, IP, profile, caller ID..."
         getRowId={(s) => s.name}
         getContextMenuItems={getContextMenuItems}
         onRowDoubleClick={(s) => setSelectedDetailSession(s)}

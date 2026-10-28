@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { RouterConfig } from './drivers/types.js';
 import { encrypt } from './crypto.js';
-import { isMySQLEnabled, getMySQLPool, initMySQLTables } from './mysql.js';
+import { isMySQLEnabled, getMySQLPool, initMySQLTables, testMySQLConnection } from './mysql.js';
 
 export interface AuditLogItem {
   id: string;
@@ -82,14 +82,18 @@ class StorageManager {
   public async init(): Promise<void> {
     if (isMySQLEnabled()) {
       try {
-        console.log('🔄 Menghubungkan ke database MySQL...');
+        console.log('🔄 Memeriksa koneksi database MySQL...');
+        const test = await testMySQLConnection();
+        if (!test.success) {
+          throw new Error(test.error || 'Cannot connect to MySQL server');
+        }
         await initMySQLTables();
         await this.loadFromMySQL();
         this.isMySql = true;
         console.log(`✅ Terhubung ke MySQL! Memuat ${this.db.routers.length} router, ${this.db.users.length} pengguna, dan ${this.db.auditLogs.length} audit log.`);
         return;
       } catch (err: any) {
-        console.error('⚠️  Gagal menginisialisasi MySQL, beralih ke penyimpanan lokal JSON:', err.message);
+        console.warn('⚠️  MySQL tidak dapat dihubungi, beralih ke penyimpanan lokal JSON (data/db.json):', err.message);
         this.isMySql = false;
       }
     } else {
